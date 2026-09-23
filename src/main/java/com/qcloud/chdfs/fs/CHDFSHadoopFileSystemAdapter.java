@@ -1,5 +1,6 @@
 package com.qcloud.chdfs.fs;
 
+import com.google.common.base.Preconditions;
 import com.qcloud.chdfs.permission.RangerAccessType;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.ContentSummary;
@@ -70,6 +71,9 @@ public class CHDFSHadoopFileSystemAdapter extends FileSystemWithCleanerAndSSE im
 
     public static final boolean DEFAULT_CHDFS_USE_SHORT_BUCKETNAME = false;
 
+    private static final String FS_OFS_BUCKET_PREFIX = "fs.ofs.bucket.";
+    private static final String FS_OFS_PREFIX = "fs.ofs.";
+
     private final CHDFSHadoopFileSystemJarLoader jarLoader = new CHDFSHadoopFileSystemJarLoader();
     private FileSystem actualImplFS = null;
     private URI uri = null;
@@ -81,11 +85,13 @@ public class CHDFSHadoopFileSystemAdapter extends FileSystemWithCleanerAndSSE im
     }
 
     @Override
-    public void initialize(URI name, Configuration conf) throws IOException {
+    public void initialize(URI name, Configuration originalConf) throws IOException {
         log.debug("CHDFSHadoopFileSystemAdapter adapter initialize");
         long initStartMs = System.currentTimeMillis();
         log.debug("CHDFSHadoopFileSystemAdapter start-init-start time: {}", initStartMs);
         try {
+            String bucket = name.getHost();
+            Configuration conf = propagateBucketOptions(originalConf, bucket);
             super.initialize(name, conf);
             this.setConf(conf);
             String mountPointAddr = name.getHost();
@@ -153,6 +159,38 @@ public class CHDFSHadoopFileSystemAdapter extends FileSystemWithCleanerAndSSE im
             throw new IOException("initialize failed! oops! a unexpected exception occur! " + e, e);
         }
         log.debug("total init file system, [elapse-ms: {}]", System.currentTimeMillis() - initStartMs);
+    }
+
+    public static Configuration propagateBucketOptions(Configuration source, String bucket) {
+        if (null == bucket || 0 == bucket.length()) {
+            Preconditions.checkArgument(false, "bucket is null or empty");
+        }
+        final String bucketPrefix = FS_OFS_BUCKET_PREFIX + bucket +'.';
+        log.debug("propagating entries under {}", bucketPrefix);
+        final Configuration dest = new Configuration(source);
+        for (Map.Entry<String, String> entry : source) {
+            final String key = entry.getKey();
+            final String value = entry.getValue();
+            if (!key.startsWith(bucketPrefix) || bucketPrefix.equals(key)) {
+                continue;
+            }
+            //  bucket prefix to strip it
+            final String stripped = key.substring(bucketPrefix.length());
+            if ("impl".equals(stripped)) {
+                // tell user off, here for now not skip "bucket." configurations
+                // because of cosn original region or endpoint has sub string "bucket"
+                // it is better to change all original without sub string "bucket"
+                log.debug("Ignoring bucket option {}", key);
+            }  else {
+                // propagate the value, building a new origin field.
+                // to track overwrites, the generic key is overwritten even if
+                // already matches the new one.
+                final String generic = FS_OFS_PREFIX + stripped;
+                log.debug("Updating {} from origin", generic);
+                dest.set(generic, value, key);
+            }
+        }
+        return dest;
     }
 
     boolean isValidMountPointAddrChdfsType(String mountPointAddr) {
